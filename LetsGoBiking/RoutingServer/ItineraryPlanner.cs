@@ -23,10 +23,7 @@ namespace LetsGoBiking.RoutingServer
             return SupportedCities.Contains(city.ToLower());
         }
 
-        public static ItineraryDto ComputeInterCity(
-            double originLat, double originLon, string originCity,
-            double destLat, double destLon, string destCity,
-            StationInfo[] originStations, StationInfo[] destStations)
+        public static ItineraryDto ComputeInterCity(double originLat, double originLon, string originCity,double destLat, double destLon, string destCity,StationInfo[] originStations, StationInfo[] destStations)
         {
             // Create the itinerary object
             var itinerary = new ItineraryDto
@@ -35,7 +32,7 @@ namespace LetsGoBiking.RoutingServer
                 DestinationCity = destCity,
                 IsInterCity = !string.Equals(originCity, destCity, StringComparison.OrdinalIgnoreCase),
 
-                // Coordinates needed by the frontend
+                // ✅ CRITICAL: Set coordinates for front-end drawing
                 OriginLat = originLat,
                 OriginLon = originLon,
                 DestLat = destLat,
@@ -82,7 +79,7 @@ namespace LetsGoBiking.RoutingServer
             itinerary.StartStation = $"{startStation.Name} ({startStation.Address})";
             itinerary.EndStation = $"{endStation.Name} ({endStation.Address})";
 
-            // CRITICAL: give the full objects so the front can draw
+            // ✅ CRITICAL: Give the full station objects so the front can draw markers
             itinerary.StartStationDetails = startStation;
             itinerary.EndStationDetails = endStation;
 
@@ -116,28 +113,35 @@ namespace LetsGoBiking.RoutingServer
             if (stations == null || stations.Length == 0)
                 return null;
 
-            // Filter open stations
+            // Debug: Log station count and status
+            Console.WriteLine($"Finding station from {stations.Length} total stations");
             var openStations = stations.Where(s =>
                 string.Equals(s.Status, "OPEN", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(s.Status, "AVAILABLE", StringComparison.OrdinalIgnoreCase) ||
                 string.IsNullOrEmpty(s.Status)).ToList();
 
-            // Filter bike/stand availability
+            Console.WriteLine($"Found {openStations.Count} open/available stations");
+
+            // Filter for bikes/stands availability
             var availableStations = openStations
                 .Where(s => needBike ? s.AvailableBikes > 0 : s.AvailableStands > 0)
                 .OrderBy(s => GeoUtils.HaversineDistance(lat, lon, s.Latitude, s.Longitude))
                 .ToList();
 
+            Console.WriteLine($"Found {availableStations.Count} stations with {(needBike ? "bikes" : "stands")} available");
+
             if (availableStations.Any())
             {
-                return availableStations.First();
+                var nearest = availableStations.First();
+                Console.WriteLine($"Selected station: {nearest.Name} with {nearest.AvailableBikes} bikes, {nearest.AvailableStands} stands");
+                return nearest;
             }
 
             return null;
         }
 
         public static ItineraryDto ComputeWalkingOnly(double originLat, double originLon,
-                                                      double destLat, double destLon)
+                                              double destLat, double destLon)
         {
             var walkDistance = GeoUtils.HaversineDistance(originLat, originLon, destLat, destLon);
             var walkTime = GeoUtils.WalkingSecondsFromMeters(walkDistance);
@@ -146,11 +150,16 @@ namespace LetsGoBiking.RoutingServer
             {
                 IsWalkingOnly = true,
 
-                // Needed coordinates for front-end drawing
+                // ✅ Needed coordinates for front-end drawing
                 OriginLat = originLat,
                 OriginLon = originLon,
                 DestLat = destLat,
                 DestLon = destLon,
+
+                StartStation = null,
+                EndStation = null,
+                StartStationDetails = null,
+                EndStationDetails = null,
 
                 WalkToStartMeters = Math.Round(walkDistance, 2),
                 BikeMeters = 0,
