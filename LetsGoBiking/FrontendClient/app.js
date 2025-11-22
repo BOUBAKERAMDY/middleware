@@ -5,6 +5,8 @@ const API_CONFIG = {
     NOMINATIM_URL: 'https://nominatim.openstreetmap.org/search',
     ROUTING_URL: 'http://localhost:8090/MyService/Itinerary',
     OSRM_BASE_URL: 'https://router.project-osrm.org/route/v1',
+    ACTIVEMQ_WS_URL: 'ws://localhost:61614',  // ← FIXED: removed /stomp
+    ACTIVEMQ_TOPIC: '/topic/stationAlerts',
     MAP_CENTER: [45.764043, 4.835659],
     MAP_ZOOM: 13
 };
@@ -16,6 +18,147 @@ let map, currentRouteLayer, markersLayer;
 let searchTimeout;
 let selectedOriginIndex = -1;
 let selectedDestinationIndex = -1;
+let stompClient = null;
+let currentPickupStation = null;
+let currentCity = null;
+
+// ========================================
+// ACTIVEMQ - SIMPLIFIED
+// ========================================
+function connectWebSocket() {
+    console.log('[ActiveMQ] Attempting connection to:', API_CONFIG.ACTIVEMQ_WS_URL);
+
+    try {
+        const ws = new WebSocket(API_CONFIG.ACTIVEMQ_WS_URL);
+        stompClient = Stomp.over(ws);
+        stompClient.debug = null; // Disable debug spam
+
+        stompClient.connect({},
+            function (frame) {
+                console.log('[ActiveMQ] ✓ Connected!');
+                updateWSStatus('connected');
+
+                stompClient.subscribe(API_CONFIG.ACTIVEMQ_TOPIC, function (message) {
+                    console.log('[ActiveMQ] 📨 Message received:', message.body);
+                    const alert = JSON.parse(message.body);
+                    showStationAlert(
+                        `Station Alert: ${alert.Message}`,
+                        `Station: ${alert.StationName}\nCity: ${alert.City}\nBikes: ${alert.AvailableBikes}\nStands: ${alert.AvailableStands}`
+                    );
+                });
+
+                console.log('[ActiveMQ] ✓ Subscribed to:', API_CONFIG.ACTIVEMQ_TOPIC);
+            },
+            function (error) {
+                console.error('[ActiveMQ] ✗ Connection failed:', error);
+                updateWSStatus('disconnected');
+            }
+        );
+    } catch (error) {
+        console.error('[ActiveMQ] ✗ Error:', error);
+        updateWSStatus('disconnected');
+    }
+}
+
+function updateWSStatus(status) {
+    const el = document.getElementById('ws-status');
+    if (!el) return;
+    el.className = `ws-status ${status}`;
+    el.querySelector('span').textContent = status === 'connected' ? 'Live Updates' : 'Disconnected';
+}
+
+function showStationAlert(title, message) {
+    console.log('[Alert] Showing popup');
+    document.getElementById('alert-title').textContent = title;
+    document.getElementById('alert-message').textContent = message;
+    document.getElementById('station-alert-popup').classList.add('show');
+    setTimeout(() => closeStationAlert(), 30000);
+}
+
+function closeStationAlert() {
+    document.getElementById('station-alert-popup').classList.remove('show');
+}
+
+function handleRecalculate() {
+    closeStationAlert();
+}
+
+// ========================================
+// FORCE STATION
+// ========================================
+async function forceStationUnavailable() {
+    // Get values from manual inputs OR current pickup station
+    const stationId = document.getElementById('test-station-id')?.value ||
+        (currentPickupStation ? currentPickupStation.id : null);
+    const city = document.getElementById('test-city')?.value ||
+        (currentPickupStation ? currentPickupStation.city : null);
+
+    if (!stationId || !city) {
+        showTestResult('error', '✗ No station to force. Calculate route first or enter values manually.');
+        return;
+    }
+
+    const btn = document.getElementById('force-unavailable-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Forcing...';
+
+    console.log('[Force] Forcing station:', stationId, 'in', city);
+
+    const url = `http://localhost:9000/ProxyServiceRest/ForceStationUnavailable?stationId=${stationId}&city=${city}`;
+
+    try {
+        const response = await fetch(url, { method: 'POST' });
+        const data = await response.json();
+
+        console.log('[Force] Response:', data);
+
+        if (data.Success) {
+            showTestResult('success', `✓ Success! Wait for alert popup...`);
+        } else {
+            showTestResult('error', `✗ ${data.Message}`);
+        }
+    } catch (error) {
+        console.error('[Force] Error:', error);
+        showTestResult('error', `✗ ${error.message}`);
+    }
+
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Force This Station Unavailable';
+}
+
+function showTestResult(type, message) {
+    const el = document.getElementById('test-result');
+    el.className = `test-result ${type} show`;
+    el.innerHTML = message;
+}
+
+function extractCityFromAddress(address) {
+    const cities = ['lyon', 'paris', 'marseille', 'toulouse', 'nice', 'nantes', 'strasbourg'];
+    const lower = address.toLowerCase();
+    return cities.find(city => lower.includes(city)) || 'lyon';
+}
+
+function extractStationId(name) {
+    const match = name.match(/^(\d+)/);
+    return match ? match[1] : null;
+}
+
+function showTestSection() {
+    if (!currentPickupStation) return;
+
+    document.getElementById('test-station-name').textContent = `📍 ${currentPickupStation.name}`;
+    document.getElementById('test-station-details').innerHTML = `
+        <div>City: ${currentPickupStation.city}</div>
+        <div>Station ID: ${currentPickupStation.id}</div>
+        <div>Available Bikes: ${currentPickupStation.bikes}</div>
+    `;
+    document.getElementById('test-section').style.display = 'block';
+    console.log('[Test] Section shown for station:', currentPickupStation.name);
+}
+
+function hideTestSection() {
+    document.getElementById('test-section').style.display = 'none';
+}
 
 // ========================================
 // MAP ICONS
@@ -247,6 +390,22 @@ async function calculateRoute() {
         if (!response.ok) throw new Error('Failed to calculate route');
 
         const data = await response.json();
+
+        currentCity = extractCityFromAddress(origin);
+
+        if (data.StartStationDetails && !data.IsWalkingOnly) {
+            currentPickupStation = {
+                id: extractStationId(data.StartStationDetails.Name),
+                name: data.StartStationDetails.Name,
+                city: currentCity,
+                bikes: data.StartStationDetails.AvailableBikes,
+                stands: data.StartStationDetails.AvailableStands
+            };
+            showTestSection();
+        } else {
+            hideTestSection();
+        }
+
         displayRoute(data);
         await drawRouteOnMap(data);
     } catch (error) {
@@ -355,7 +514,6 @@ async function drawRouteOnMap(data) {
     clearMap();
     const allCoords = [];
 
-    // Origin marker
     if (data.OriginLat && data.OriginLon) {
         L.marker([data.OriginLat, data.OriginLon], { icon: MapIcons.origin })
             .bindPopup(`<strong>Origin</strong><br>${data.OriginLat.toFixed(5)}, ${data.OriginLon.toFixed(5)}`)
@@ -363,7 +521,6 @@ async function drawRouteOnMap(data) {
         allCoords.push([data.OriginLat, data.OriginLon]);
     }
 
-    // Destination marker
     if (data.DestLat && data.DestLon) {
         L.marker([data.DestLat, data.DestLon], { icon: MapIcons.destination })
             .bindPopup(`<strong>Destination</strong><br>${data.DestLat.toFixed(5)}, ${data.DestLon.toFixed(5)}`)
@@ -376,37 +533,32 @@ async function drawRouteOnMap(data) {
         const coords = walkRoute || [[data.OriginLat, data.OriginLon], [data.DestLat, data.DestLon]];
         L.polyline(coords, { color: '#10b981', weight: 5, opacity: 0.8, dashArray: '10, 10' }).addTo(currentRouteLayer);
     } else {
-        // Start station
         if (data.StartStationDetails) {
             L.marker([data.StartStationDetails.Latitude, data.StartStationDetails.Longitude], { icon: MapIcons.bikeStation })
-                .bindPopup(`<strong>Pickup Station</strong><br><strong>${data.StartStationDetails.Name}</strong><br>🚲 ${data.StartStationDetails.AvailableBikes} bikes<br>🅿️ ${data.StartStationDetails.AvailableStands} spots`)
+                .bindPopup(`<strong>Pickup</strong><br>${data.StartStationDetails.Name}<br>🚲 ${data.StartStationDetails.AvailableBikes} bikes`)
                 .addTo(markersLayer);
             allCoords.push([data.StartStationDetails.Latitude, data.StartStationDetails.Longitude]);
         }
 
-        // End station
         if (data.EndStationDetails) {
             L.marker([data.EndStationDetails.Latitude, data.EndStationDetails.Longitude], { icon: MapIcons.bikeStation })
-                .bindPopup(`<strong>Dropoff Station</strong><br><strong>${data.EndStationDetails.Name}</strong><br>🚲 ${data.EndStationDetails.AvailableBikes} bikes<br>🅿️ ${data.EndStationDetails.AvailableStands} spots`)
+                .bindPopup(`<strong>Dropoff</strong><br>${data.EndStationDetails.Name}<br>🅿️ ${data.EndStationDetails.AvailableStands} spots`)
                 .addTo(markersLayer);
             allCoords.push([data.EndStationDetails.Latitude, data.EndStationDetails.Longitude]);
         }
 
-        // Walk to start
         if (data.StartStationDetails && data.WalkToStartMeters > 0) {
             const route = await getWalkingRoute(data.OriginLat, data.OriginLon, data.StartStationDetails.Latitude, data.StartStationDetails.Longitude);
             const coords = route || [[data.OriginLat, data.OriginLon], [data.StartStationDetails.Latitude, data.StartStationDetails.Longitude]];
             L.polyline(coords, { color: '#10b981', weight: 5, opacity: 0.8, dashArray: '10, 10' }).addTo(currentRouteLayer);
         }
 
-        // Bike route
         if (data.StartStationDetails && data.EndStationDetails && data.BikeMeters > 0) {
             const route = await getCyclingRoute(data.StartStationDetails.Latitude, data.StartStationDetails.Longitude, data.EndStationDetails.Latitude, data.EndStationDetails.Longitude);
             const coords = route || [[data.StartStationDetails.Latitude, data.StartStationDetails.Longitude], [data.EndStationDetails.Latitude, data.EndStationDetails.Longitude]];
             L.polyline(coords, { color: '#f59e0b', weight: 5, opacity: 0.8 }).addTo(currentRouteLayer);
         }
 
-        // Walk to end
         if (data.EndStationDetails && data.WalkToEndMeters > 0) {
             const route = await getWalkingRoute(data.EndStationDetails.Latitude, data.EndStationDetails.Longitude, data.DestLat, data.DestLon);
             const coords = route || [[data.EndStationDetails.Latitude, data.EndStationDetails.Longitude], [data.DestLat, data.DestLon]];
@@ -488,12 +640,22 @@ function toggleFullscreen() {
 // INITIALIZATION
 // ========================================
 document.addEventListener('DOMContentLoaded', () => {
+    console.log('==========================================');
+    console.log('[App] Starting Let\'s Go Biking...');
+    console.log('==========================================');
+
     initializeMap();
+    console.log('[App] ✓ Map initialized');
+
     setupAutocomplete();
+    console.log('[App] ✓ Autocomplete setup');
+
+    connectWebSocket();
 
     document.getElementById('search-btn').addEventListener('click', calculateRoute);
     document.getElementById('reset-view-btn').addEventListener('click', resetMapView);
     document.getElementById('fullscreen-btn').addEventListener('click', toggleFullscreen);
+    document.getElementById('force-unavailable-btn').addEventListener('click', forceStationUnavailable);
 
     document.getElementById('origin-input').addEventListener('keypress', (e) => {
         if (e.key === 'Enter' && !document.getElementById('origin-suggestions').classList.contains('active')) {
@@ -510,4 +672,8 @@ document.addEventListener('DOMContentLoaded', () => {
     window.addEventListener('resize', () => {
         if (map) map.invalidateSize();
     });
+
+    console.log('==========================================');
+    console.log('[App] ✓ Ready! Waiting for alerts...');
+    console.log('==========================================');
 });

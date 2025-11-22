@@ -1,0 +1,173 @@
+﻿using System;
+using System.Linq;
+using System.ServiceModel;
+using System.ServiceModel.Web;
+using LetsGoBiking.Shared;
+
+namespace LetsGoBiking.ProxyCacheServer
+{
+    [ServiceContract]
+    public interface IProxyServiceExtended : IProxyService
+    {
+        [OperationContract]
+        [WebInvoke(Method = "POST",
+                   UriTemplate = "ForceStationUnavailable?stationId={stationId}&city={city}",
+                   ResponseFormat = WebMessageFormat.Json)]
+        ForceStationResponse ForceStationUnavailable(string stationId, string city);
+
+        [OperationContract]
+        [WebGet(UriTemplate = "TestActiveMQ", ResponseFormat = WebMessageFormat.Json)]
+        TestResponse TestActiveMQ();
+    }
+
+    [System.Runtime.Serialization.DataContract]
+    public class ForceStationResponse
+    {
+        [System.Runtime.Serialization.DataMember] public bool Success { get; set; }
+        [System.Runtime.Serialization.DataMember] public string Message { get; set; }
+        [System.Runtime.Serialization.DataMember] public string StationName { get; set; }
+        [System.Runtime.Serialization.DataMember] public int StationId { get; set; }
+        [System.Runtime.Serialization.DataMember] public string City { get; set; }
+        [System.Runtime.Serialization.DataMember] public int PreviousBikes { get; set; }
+        [System.Runtime.Serialization.DataMember] public int CurrentBikes { get; set; }
+        [System.Runtime.Serialization.DataMember] public bool AlertPublished { get; set; }
+    }
+
+    [System.Runtime.Serialization.DataContract]
+    public class TestResponse
+    {
+        [System.Runtime.Serialization.DataMember] public bool Connected { get; set; }
+        [System.Runtime.Serialization.DataMember] public string Message { get; set; }
+    }
+
+    [ServiceBehavior(InstanceContextMode = InstanceContextMode.Single)]
+    public class ProxyServiceExtended : IProxyServiceExtended
+    {
+        private readonly GenericProxyCache<JCDecauxStations> _cache;
+        private const double CACHE_DURATION_SECONDS = 300;
+
+        public ProxyServiceExtended()
+        {
+            _cache = new GenericProxyCache<JCDecauxStations>();
+        }
+
+        public StationInfo[] GetStations(string city)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(city)) return new StationInfo[0];
+                city = city.ToLower().Trim();
+
+                var stationData = _cache.Get($"stations_{city}", () => new JCDecauxStations(city), CACHE_DURATION_SECONDS);
+                return stationData?.Stations ?? new StationInfo[0];
+            }
+            catch { return new StationInfo[0]; }
+        }
+
+        public ForceStationResponse ForceStationUnavailable(string stationId, string city)
+        {
+            try
+            {
+                EnableCORS();
+                Console.WriteLine($"[ForceStation] StationId={stationId}, City={city}");
+
+                if (string.IsNullOrWhiteSpace(stationId) || string.IsNullOrWhiteSpace(city))
+                    return new ForceStationResponse { Success = false, Message = "Parameters required" };
+
+                city = city.ToLower().Trim();
+                if (!int.TryParse(stationId, out int stationIdInt))
+                    return new ForceStationResponse { Success = false, Message = "Invalid stationId" };
+
+                var stationData = _cache.Get($"stations_{city}");
+                if (stationData?.Stations == null || stationData.Stations.Length == 0)
+                    return new ForceStationResponse { Success = false, Message = "No station data" };
+
+                var station = FindStation(stationData.Stations, stationIdInt);
+                if (station == null)
+                    return new ForceStationResponse { Success = false, Message = $"Station {stationIdInt} not found" };
+
+                int originalBikes = station.AvailableBikes;
+                station.AvailableBikes = 0;
+                station.Status = "UNAVAILABLE";
+
+                var alert = new StationAlertMessage
+                {
+                    StationId = stationIdInt,
+                    City = city,
+                    StationName = station.Name,
+                    Latitude = station.Latitude,
+                    Longitude = station.Longitude,
+                    AvailableBikes = 0,
+                    AvailableStands = station.AvailableStands,
+                    Message = "NO_BIKES"
+                };
+
+                bool published = false;
+                try
+                {
+                    ActiveMQProducerService.Instance.PublishStationAlert(alert);
+                    published = true;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[ActiveMQ] Error: {ex.Message}");
+                }
+
+                return new ForceStationResponse
+                {
+                    Success = true,
+                    Message = "Station forced unavailable",
+                    StationName = station.Name,
+                    StationId = stationIdInt,
+                    City = city,
+                    PreviousBikes = originalBikes,
+                    CurrentBikes = 0,
+                    AlertPublished = published
+                };
+            }
+            catch (Exception ex)
+            {
+                return new ForceStationResponse { Success = false, Message = ex.Message };
+            }
+        }
+
+        public TestResponse TestActiveMQ()
+        {
+            EnableCORS();
+            try
+            {
+                bool ok = ActiveMQProducerService.Instance.TestConnection();
+                return new TestResponse { Connected = ok, Message = ok ? "OK" : "Failed" };
+            }
+            catch (Exception ex)
+            {
+                return new TestResponse { Connected = false, Message = ex.Message };
+            }
+        }
+
+        private StationInfo FindStation(StationInfo[] stations, int id)
+        {
+            return stations.FirstOrDefault(s => ExtractStationNumber(s.Name) == id) ??
+                   stations.FirstOrDefault(s => s.Name.Contains(id.ToString()));
+        }
+
+        private int ExtractStationNumber(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return -1;
+            foreach (var part in name.Split('-', ' ', '_'))
+                if (int.TryParse(part.Trim(), out int num)) return num;
+            return -1;
+        }
+
+        private void EnableCORS()
+        {
+            if (WebOperationContext.Current != null)
+            {
+                var ctx = WebOperationContext.Current.OutgoingResponse;
+                ctx.Headers.Add("Access-Control-Allow-Origin", "*");
+                ctx.Headers.Add("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+                ctx.Headers.Add("Access-Control-Allow-Headers", "Content-Type");
+            }
+        }
+    }
+}

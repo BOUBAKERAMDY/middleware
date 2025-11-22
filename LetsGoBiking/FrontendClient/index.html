@@ -30,6 +30,12 @@
                     <span>Let's Go Biking</span>
                 </div>
                 <div class="tagline">Premium urban mobility planner</div>
+
+                <!-- WebSocket Status -->
+                <div id="ws-status" class="ws-status disconnected">
+                    <i class="fas fa-circle"></i>
+                    <span>Disconnected</span>
+                </div>
             </div>
 
             <!-- Search Section -->
@@ -64,6 +70,23 @@
                     <span>Calculate Route</span>
                     <i class="fas fa-route"></i>
                 </button>
+
+                <!-- ADD THIS SIMPLER TEST SECTION -->
+                <div class="test-section" id="test-section" style="display: none;">
+                    <div class="test-header">
+                        <i class="fas fa-flask"></i>
+                        <span>Testing: Force Station Unavailable</span>
+                    </div>
+                    <div class="test-info" id="test-info">
+                        <div class="test-station-name" id="test-station-name"></div>
+                        <div class="test-station-details" id="test-station-details"></div>
+                    </div>
+                    <button id="force-unavailable-btn" class="test-button">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        <span>Force This Station Unavailable</span>
+                    </button>
+                    <div id="test-result" class="test-result"></div>
+                </div>
             </div>
 
             <!-- Loading State -->
@@ -128,6 +151,34 @@
             </div>
         </div>
     </div>
+    <!-- Alert Popup -->
+    <div id="station-alert-popup" class="station-alert-popup">
+        <div class="alert-content">
+            <div class="alert-icon">
+                <i class="fas fa-exclamation-circle"></i>
+            </div>
+            <div class="alert-text">
+                <div class="alert-title" id="alert-title">Station Alert</div>
+                <div class="alert-message" id="alert-message"></div>
+            </div>
+            <button class="alert-close" onclick="closeStationAlert()">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <div class="alert-actions">
+            <button class="alert-btn recalculate" onclick="handleRecalculate()">
+                <i class="fas fa-route"></i>
+                Recalculate Route
+            </button>
+            <button class="alert-btn dismiss" onclick="closeStationAlert()">
+                Dismiss
+            </button>
+        </div>
+    </div>
+
+        
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
 
     <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

@@ -1,6 +1,7 @@
 using System;
 using System.ServiceModel;
 using System.ServiceModel.Description;
+using System.ServiceModel.Web;
 
 namespace LetsGoBiking.ProxyCacheServer
 {
@@ -8,77 +9,84 @@ namespace LetsGoBiking.ProxyCacheServer
     {
         static void Main(string[] args)
         {
-            string baseAddress = "http://localhost:9000/ProxyService";
-            ServiceHost host = null;
+            string soapAddress = "http://localhost:9000/ProxyService";
+            string restAddress = "http://localhost:9000/ProxyServiceRest";
+            ServiceHost soapHost = null;
+            WebServiceHost restHost = null;
 
             try
             {
-                // Create service host
-                host = new ServiceHost(typeof(ProxyService), new Uri(baseAddress));
+                Console.WriteLine("????????????????????????????????????????????????????");
+                Console.WriteLine("?  PROXY CACHE SERVER - SOAP + REST + ActiveMQ    ?");
+                Console.WriteLine("????????????????????????????????????????????????????");
+                Console.WriteLine();
 
-                // Create binding with increased message size
-                var binding = new BasicHttpBinding();
-                binding.MaxReceivedMessageSize = 65536000; // 64 MB
-                binding.MaxBufferSize = 65536000;
-                binding.ReaderQuotas.MaxDepth = 32;
-                binding.ReaderQuotas.MaxStringContentLength = 8192000;
-                binding.ReaderQuotas.MaxArrayLength = 16384000;
-                binding.ReaderQuotas.MaxBytesPerRead = 4096000;
-                binding.ReaderQuotas.MaxNameTableCharCount = 16384;
+                // ============================
+                // SOAP SERVICE
+                // ============================
+                soapHost = new ServiceHost(typeof(ProxyService), new Uri(soapAddress));
 
-                // Add service endpoint
-                host.AddServiceEndpoint(
-                    typeof(IProxyService),
-                    binding,
-                    "");
+                var soapBinding = new BasicHttpBinding();
+                soapBinding.MaxReceivedMessageSize = 65536000;
+                soapBinding.MaxBufferSize = 65536000;
 
-                // Enable metadata
-                ServiceMetadataBehavior smb = host.Description.Behaviors.Find<ServiceMetadataBehavior>();
-                if (smb == null)
+                soapHost.AddServiceEndpoint(typeof(IProxyService), soapBinding, "");
+
+                var smbSoap = new ServiceMetadataBehavior
                 {
-                    smb = new ServiceMetadataBehavior
-                    {
-                        HttpGetEnabled = true,
-                        HttpGetUrl = new Uri(baseAddress)
-                    };
-                    host.Description.Behaviors.Add(smb);
-                }
-                else
+                    HttpGetEnabled = true,
+                    HttpGetUrl = new Uri(soapAddress)
+                };
+                soapHost.Description.Behaviors.Add(smbSoap);
+
+                soapHost.Open();
+                Console.WriteLine("? SOAP Service: " + soapAddress);
+
+                // ============================
+                // REST SERVICE
+                // ============================
+                restHost = new WebServiceHost(typeof(ProxyService), new Uri(restAddress));
+
+                var restBinding = new WebHttpBinding();
+                restBinding.CrossDomainScriptAccessEnabled = true;
+                restBinding.MaxReceivedMessageSize = 65536000;
+
+                var endpoint = restHost.AddServiceEndpoint(typeof(IProxyServiceExtended), restBinding, "");
+                endpoint.EndpointBehaviors.Add(new WebHttpBehavior
                 {
-                    smb.HttpGetEnabled = true;
-                    smb.HttpGetUrl = new Uri(baseAddress);
-                }
+                    HelpEnabled = true,
+                    DefaultOutgoingResponseFormat = WebMessageFormat.Json
+                });
 
-                // Start the service
-                host.Open();
+                restHost.Open();
+                Console.WriteLine("? REST Service:  " + restAddress);
+                Console.WriteLine();
 
-                Console.WriteLine("========================================");
-                Console.WriteLine("    PROXY CACHE SERVER - WCF SOAP");
-                Console.WriteLine("========================================");
-                Console.WriteLine($"Service is running at: {baseAddress}");
-                Console.WriteLine($"WSDL available at: {baseAddress}?wsdl");
+                // ============================
+                // TEST ACTIVEMQ
+                // ============================
+                Console.WriteLine("Testing ActiveMQ connection...");
+                bool mqOk = ActiveMQProducerService.Instance.TestConnection();
+                Console.WriteLine(mqOk ? "? ActiveMQ:      Connected" : "? ActiveMQ:      Failed");
                 Console.WriteLine();
-                Console.WriteLine("Available operations:");
-                Console.WriteLine("  - GetStations(city)");
+
+                Console.WriteLine("Available endpoints:");
+                Console.WriteLine("  SOAP: GetStations(city)");
+                Console.WriteLine("  REST: POST /ForceStationUnavailable?stationId=...&city=...");
                 Console.WriteLine();
-                Console.WriteLine("Supported cities:");
-                Console.WriteLine("  lyon, paris, rouen, toulouse, nancy,");
-                Console.WriteLine("  nantes, amiens, marseille, lille, etc.");
-                Console.WriteLine();
-                Console.WriteLine("Cache duration: 5 minutes");
-                Console.WriteLine();
-                Console.WriteLine("Press Enter to stop the service...");
+                Console.WriteLine("Press ENTER to stop...");
                 Console.ReadLine();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error starting service: {ex.Message}");
-                Console.WriteLine($"Stack trace: {ex.StackTrace}");
+                Console.WriteLine("ERROR: " + ex.Message);
                 Console.ReadLine();
             }
             finally
             {
-                host?.Close();
+                soapHost?.Close();
+                restHost?.Close();
+                ActiveMQProducerService.Instance?.Dispose();
             }
         }
     }

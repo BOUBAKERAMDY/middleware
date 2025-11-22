@@ -1,0 +1,32 @@
+﻿using LetsGoBiking.Shared;
+using System.ServiceModel;
+using System.ServiceModel.Web;
+
+namespace LetsGoBiking.ProxyCacheServer
+{
+    [ServiceContract]
+    public interface IProxyService
+    {
+        [OperationContract]
+        StationInfo[] GetStations(string city);
+    }
+
+    public interface IProxyServiceExtended : IProxyService
+    {
+        [OperationContract]
+        [WebInvoke(Method = "POST",
+                   UriTemplate = "ForceStationUnavailable?stationId={stationId}&city={city}",
+                   ResponseFormat = WebMessageFormat.Json)]
+        ForceStationResponse ForceStationUnavailable(string stationId, string city);
+    }
+
+    [System.Runtime.Serialization.DataContract]
+    public class ForceStationResponse
+    {
+        [System.Runtime.Serialization.DataMember] public bool Success { get; set; }
+        [System.Runtime.Serialization.DataMember] public string Message { get; set; }
+        [System.Runtime.Serialization.DataMember] public string StationName { get; set; }
+        [System.Runtime.Serialization.DataMember] public int PreviousBikes { get; set; }
+        [System.Runtime.Serialization.DataMember] public int CurrentBikes { get; set; }
+    }
+}
