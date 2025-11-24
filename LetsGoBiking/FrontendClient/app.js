@@ -1,19 +1,17 @@
 // ========================================
 // CONFIGURATION
 // ========================================
+
 const API_CONFIG = {
     NOMINATIM_URL: 'https://nominatim.openstreetmap.org/search',
     ROUTING_URL: 'http://localhost:8090/MyService/Itinerary',
     OSRM_BASE_URL: 'https://router.project-osrm.org/route/v1',
-    ACTIVEMQ_WS_URL: 'ws://localhost:61614',  // ← FIXED: removed /stomp
+    ACTIVEMQ_WS_URL: 'ws://127.0.0.1:61614',   // ← FIXED: Added /stomp
     ACTIVEMQ_TOPIC: '/topic/stationAlerts',
     MAP_CENTER: [45.764043, 4.835659],
     MAP_ZOOM: 13
 };
 
-// ========================================
-// GLOBAL VARIABLES
-// ========================================
 let map, currentRouteLayer, markersLayer;
 let searchTimeout;
 let selectedOriginIndex = -1;
@@ -22,44 +20,65 @@ let stompClient = null;
 let currentPickupStation = null;
 let currentCity = null;
 
-// ========================================
-// ACTIVEMQ - SIMPLIFIED
-// ========================================
+// STEP 2: Replace the connectWebSocket function (lines 28-61)
 function connectWebSocket() {
     console.log('[ActiveMQ] Attempting connection to:', API_CONFIG.ACTIVEMQ_WS_URL);
-
+    
     try {
-        const ws = new WebSocket(API_CONFIG.ACTIVEMQ_WS_URL);
+        const ws = new WebSocket(API_CONFIG.ACTIVEMQ_WS_URL, ['stomp']);
         stompClient = Stomp.over(ws);
-        stompClient.debug = null; // Disable debug spam
-
-        stompClient.connect({},
+        
+        // Disable debug to reduce console spam
+        stompClient.debug = null;
+        
+        // Set heartbeat to keep connection alive
+        stompClient.heartbeat.outgoing = 20000; // Send heartbeat every 20 seconds
+        stompClient.heartbeat.incoming = 20000; // Expect heartbeat every 20 seconds
+        
+        stompClient.connect(
+            {},  // Empty headers (no auth needed if default config)
             function (frame) {
-                console.log('[ActiveMQ] ✓ Connected!');
+                console.log('[ActiveMQ] ✓ Connected successfully!');
                 updateWSStatus('connected');
-
+                
                 stompClient.subscribe(API_CONFIG.ACTIVEMQ_TOPIC, function (message) {
                     console.log('[ActiveMQ] 📨 Message received:', message.body);
-                    const alert = JSON.parse(message.body);
-                    showStationAlert(
-                        `Station Alert: ${alert.Message}`,
-                        `Station: ${alert.StationName}\nCity: ${alert.City}\nBikes: ${alert.AvailableBikes}\nStands: ${alert.AvailableStands}`
-                    );
+                    try {
+                        const alert = JSON.parse(message.body);
+                        showStationAlert(
+                            `Station Alert: ${alert.Message}`,
+                            `Station: ${alert.StationName}\nCity: ${alert.City}\nBikes: ${alert.AvailableBikes}\nStands: ${alert.AvailableStands}`
+                        );
+                    } catch (error) {
+                        console.error('[ActiveMQ] Error parsing message:', error);
+                    }
                 });
-
+                
                 console.log('[ActiveMQ] ✓ Subscribed to:', API_CONFIG.ACTIVEMQ_TOPIC);
             },
             function (error) {
                 console.error('[ActiveMQ] ✗ Connection failed:', error);
                 updateWSStatus('disconnected');
+                
+                // Retry after 5 seconds
+                setTimeout(connectWebSocket, 5000);
             }
         );
+        
+        // Handle WebSocket close
+        ws.onclose = function(event) {
+            console.log('[ActiveMQ] WebSocket closed. Code:', event.code);
+            updateWSStatus('disconnected');
+            setTimeout(connectWebSocket, 5000);
+        };
+        
     } catch (error) {
-        console.error('[ActiveMQ] ✗ Error:', error);
+        console.error('[ActiveMQ] ✗ Exception:', error);
         updateWSStatus('disconnected');
+        setTimeout(connectWebSocket, 5000);
     }
 }
-
+// Keep these functions as they are (lines 63-84)
 function updateWSStatus(status) {
     const el = document.getElementById('ws-status');
     if (!el) return;
@@ -80,8 +99,22 @@ function closeStationAlert() {
 }
 
 function handleRecalculate() {
+    console.log('[Recalculate] Recalculating route...');
+    
+    
     closeStationAlert();
+    
+
+    calculateRoute();
 }
+
+
+
+
+
+
+
+
 
 // ========================================
 // FORCE STATION

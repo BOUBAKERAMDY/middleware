@@ -24,6 +24,10 @@ namespace LetsGoBiking.RoutingServer
                 binding.ReaderQuotas.MaxArrayLength = 16384000;
                 binding.ReaderQuotas.MaxBytesPerRead = 4096000;
                 binding.ReaderQuotas.MaxNameTableCharCount = 16384;
+                binding.OpenTimeout = TimeSpan.FromMinutes(5);
+                binding.CloseTimeout = TimeSpan.FromMinutes(5);
+                binding.SendTimeout = TimeSpan.FromMinutes(5);
+                binding.ReceiveTimeout = TimeSpan.FromMinutes(5);
 
                 var endpoint = new EndpointAddress(ProxyEndpoint);
 
